@@ -38,6 +38,8 @@ from responses_templates import PROMPT, book_prompts, help_text
 ##############
 import argparse
 def parse_args():
+    parser = argparse.ArgumentParser(description="Arguments for running the Extra")
+    
     parser.add_argument('--telegram-token', type=str, required=True, help="Your Telegram API token")
     parser.add_argument('--gemini-api-keys', nargs='+', required=True, help="List of API keys to use")
 
@@ -49,15 +51,15 @@ def parse_args():
 ###############
 args = parse_args()
 
-GEMINI_API_KEY = *args["gemini-api-keys"][0]
+GEMINI_API_KEY = args.gemini_api_keys[0]
 
 genai.configure(api_key=GEMINI_API_KEY)
 
 model = genai.GenerativeModel("gemini-2.0-flash-thinking-exp-01-21")
 
-API_KEYS = *args["gemini-api-keys"]
+API_KEYS = args.gemini_api_keys
 
-API_TOKEN = args["telegram-token"]
+API_TOKEN = args.telegram_token
 
 logging.basicConfig(level=logging.INFO)
 
