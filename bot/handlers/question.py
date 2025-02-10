@@ -8,12 +8,25 @@ from aiogram.types import CallbackQuery
 from bot.middlewares import RateLimiter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import asyncio
+
 from responses_templates import book_prompts, PROMPT
 
 from bot.config import parse_args
 args = parse_args()
 api_keys = args.gemini_api_keys
 gemini_handler = GeminiHandler(api_keys)
+
+app_password = "xxxx xxxx xxxx xxxx"
+
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+SENDER_EMAIL = "@gmail.com"  # Gmail login
+SENDER_PASSWORD = app_password  # Gmail App Password
+RECEIVER_EMAIL = ""
 
 import logging
 
@@ -27,14 +40,17 @@ def create_navigation_keyboard():
 
 def create_rating_keyboard():
     buttons = [
-        InlineKeyboardButton(text="1", callback_data="rate_1"),
-        InlineKeyboardButton(text="2", callback_data="rate_2"),
-        InlineKeyboardButton(text="3", callback_data="rate_3"),
-        InlineKeyboardButton(text="4", callback_data="rate_4"),
-        InlineKeyboardButton(text="5", callback_data="rate_5"),
+        [InlineKeyboardButton(text="📖 Продолжить по книге", callback_data="continue_book")],
+        [
+            InlineKeyboardButton(text="1", callback_data="rate_1"),
+            InlineKeyboardButton(text="2", callback_data="rate_2"),
+            InlineKeyboardButton(text="3", callback_data="rate_3"),
+            InlineKeyboardButton(text="4", callback_data="rate_4"),
+            InlineKeyboardButton(text="5", callback_data="rate_5"),
+        ],
+        [InlineKeyboardButton(text="📝 Оставить комментарий", callback_data="add_comment")]
     ]
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[buttons])
-    return keyboard
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @question_router.message(Command("question"), RateLimiter(limit=5, period=60))
 async def ask_book(message: types.Message, state: FSMContext):
@@ -108,20 +124,88 @@ async def save_question(message: types.Message, state: FSMContext):
         logging.error(f"Error for user {message.from_user.id}: {str(e)}")
         await message.answer("⚠️ Произошла ошибка при обработке вашего вопроса.")
     finally:
-        #await state.clear()
+        # await state.clear()
         pass
+
+@question_router.callback_query(F.data == "continue_book")
+async def handle_continue_book(callback: CallbackQuery, state: FSMContext):
+    user_data = await state.get_data()
+    book = user_data.get("book")
+
+    if not book:
+        await callback.message.answer("❌ Ошибка: книга не найдена в сессии. Начните заново с /question")
+        await state.clear()
+        return
+
+    await callback.message.answer(
+        f"Введите ваш новый вопрос по книге *{book}*:",
+        parse_mode="Markdown",
+        reply_markup=create_navigation_keyboard()
+    )
+    await state.set_state(QuestionState.waiting_for_question)
+    await callback.answer()
 
 @question_router.callback_query(F.data.startswith("rate_"))
 async def handle_rating(callback: CallbackQuery, state: FSMContext):
     rating = int(callback.data.split("_")[1])
-    user_id = callback.from_user.id
+    await state.update_data(rating=rating)
 
+    await callback.message.edit_reply_markup(
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="📝 Оставить комментарий", callback_data="add_comment")],
+                [InlineKeyboardButton(text="✅ Завершить оценку", callback_data="finish_rating")]
+            ]
+        )
+    )
+    await callback.answer(f"Вы поставили оценку {rating}. Теперь вы можете оставить комментарий или завершить.")
+
+
+@question_router.callback_query(F.data == "add_comment")
+async def handle_add_comment(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(
+        "Пожалуйста, напишите ваш комментарий:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_comment")]]
+        )
+    )
+    await state.set_state(QuestionState.waiting_for_comment)
+    await callback.answer()
+
+
+@question_router.callback_query(F.data == "cancel_comment")
+async def handle_cancel_comment(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(None)
+    await callback.message.edit_text("❌ Комментарий не был сохранен")
+    await callback.answer()
+    await handle_finish_rating(callback, state)
+
+
+@question_router.callback_query(F.data == "finish_rating")
+async def handle_finish_rating(callback: CallbackQuery, state: FSMContext):
     user_data = await state.get_data()
-    book = user_data.get("book", "Неизвестная книга")
-    question = user_data.get("question", "Неизвестный вопрос")
-    response = user_data.get("response", "Неизвестный ответ")
+    await save_feedback_to_file(user_data)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.answer("✅ Спасибо за ваш отзыв!")
+    await state.clear()
 
-    logging.info(f"User {user_id} rated the response: {rating}")
+
+@question_router.message(QuestionState.waiting_for_comment)
+async def save_comment(message: types.Message, state: FSMContext):
+    await state.update_data(comment=message.text)
+    user_data = await state.get_data()
+    await save_feedback_to_file(user_data)
+    await message.answer("✅ Комментарий сохранен! Спасибо за ваш отзыв!")
+    await state.clear()
+
+
+async def save_feedback_to_file(user_data: dict):
+    rating = user_data.get("rating", "Без оценки")
+    book = user_data.get("book")
+    question = user_data.get("question")
+    response = user_data.get("response")
+    comment = user_data.get("comment", "Без комментария")
 
     with open("ratings.txt", "a", encoding="utf-8") as file:
         file.write(
@@ -129,13 +213,42 @@ async def handle_rating(callback: CallbackQuery, state: FSMContext):
             f"Вопрос: {question}\n"
             f"Ответ: {response}\n"
             f"Оценка: {rating}\n"
+            f"Комментарий: {comment}\n"
             f"-----------------------------\n"
         )
 
-    await callback.answer(f"Спасибо за оценку: {rating}!", show_alert=True)
+    if comment != "Без комментария":
+        await send_email(book, question, response, rating, comment)
 
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await state.clear()
+
+async def send_email(book, question, response, rating, comment):
+    subject = f"Новый отзыв на книгу: {book}"
+    body = (
+        f"Книга: {book}\n"
+        f"Вопрос: {question}\n"
+        f"Ответ: {response}\n"
+        f"Оценка: {rating}\n"
+        f"Комментарий: {comment}\n"
+    )
+
+    msg = MIMEMultipart()
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = RECEIVER_EMAIL
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, send_smtp_email, msg)
+        logging.info("Email send succefully")
+    except Exception as e:
+        logging.error(f"Error occured while sending email: {e}")
+
+def send_smtp_email(msg):
+    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
 
 
 @question_router.callback_query(lambda c: c.data == "go_back")
