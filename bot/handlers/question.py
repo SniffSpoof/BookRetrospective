@@ -20,13 +20,13 @@ args = parse_args()
 api_keys = args.gemini_api_keys
 gemini_handler = GeminiHandler(api_keys)
 
-app_password = "xxxx xxxx xxxx xxxx"
+app_password = args.gmail_app_password
 
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
-SENDER_EMAIL = "@gmail.com"  # Gmail login
+SENDER_EMAIL = args.gmail_login  # Gmail login
 SENDER_PASSWORD = app_password  # Gmail App Password
-RECEIVER_EMAIL = ""
+RECEIVER_EMAIL = args.receivers_email
 
 import logging
 
