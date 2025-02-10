@@ -2,6 +2,7 @@ import asyncio
 import google.generativeai as genai
 from google.api_core import exceptions
 from typing import List, Dict, Any
+import logging
 
 from responses_templates import book_prompts, PROMPT
 
